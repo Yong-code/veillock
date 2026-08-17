@@ -70,8 +70,8 @@ final class LockCoordinator: ObservableObject {
     cancelAuthentication(status: "The app remains protected.")
   }
 
-  func cancelAuthentication(for bundleIdentifier: String) {
-    guard lockedApplication?.bundleIdentifier == bundleIdentifier, isAuthenticating else { return }
+  func cancelAuthenticationForSpaceChange() {
+    guard isAuthenticating else { return }
     cancelAuthentication(status: "The app remains protected.")
   }
 

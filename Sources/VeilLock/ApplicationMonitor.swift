@@ -51,6 +51,17 @@ final class ApplicationMonitor {
 
     observers.append(
       center.addObserver(
+        forName: NSWorkspace.activeSpaceDidChangeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.lockCoordinator.cancelAuthenticationForSpaceChange()
+        }
+      })
+
+    observers.append(
+      center.addObserver(
         forName: NSWorkspace.didDeactivateApplicationNotification,
         object: nil,
         queue: .main
@@ -175,7 +186,6 @@ final class ApplicationMonitor {
   }
 
   private func handleDeactivation(bundleIdentifier: String) {
-    lockCoordinator.cancelAuthentication(for: bundleIdentifier)
     cancelActiveReauthentication(for: bundleIdentifier)
     guard lockCoordinator.isUnlocked(bundleIdentifier) else { return }
     beginTrackingUnlockedApplication(bundleIdentifier)
