@@ -1,0 +1,21 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      # Pinned to the commit currently served by the official v4 tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Run unit tests
+        run: swift test
+      - name: Audit public release content
+        run: zsh Scripts/audit-public-release.sh
