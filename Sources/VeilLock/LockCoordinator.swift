@@ -99,8 +99,56 @@ final class LockCoordinator: ObservableObject {
     finishActiveRequest(status: "")
 
     onApplicationUnlocked?(application.bundleIdentifier)
-    runningApplication.unhide()
-    runningApplication.activate(options: [.activateIgnoringOtherApps])
+    restoreAfterAuthentication(
+      runningApplication: runningApplication,
+      bundleIdentifier: application.bundleIdentifier,
+      attemptsRemaining: 40
+    )
+  }
+
+  private func restoreAfterAuthentication(
+    runningApplication: NSRunningApplication,
+    bundleIdentifier: String,
+    attemptsRemaining: Int
+  ) {
+    guard isUnlocked(bundleIdentifier), !runningApplication.isTerminated else { return }
+
+    // Most regular apps report this promptly. Apple documents that some apps
+    // never do, so after one second we fall back to repeated restore attempts.
+    if !runningApplication.isFinishedLaunching, attemptsRemaining > 20 {
+      scheduleRestore(
+        runningApplication: runningApplication,
+        bundleIdentifier: bundleIdentifier,
+        attemptsRemaining: attemptsRemaining - 1
+      )
+      return
+    }
+
+    let didUnhide = runningApplication.unhide()
+    let didActivate = runningApplication.activate(options: [.activateIgnoringOtherApps])
+    guard attemptsRemaining > 0, (!didUnhide || !didActivate || runningApplication.isHidden) else {
+      return
+    }
+
+    scheduleRestore(
+      runningApplication: runningApplication,
+      bundleIdentifier: bundleIdentifier,
+      attemptsRemaining: attemptsRemaining - 1
+    )
+  }
+
+  private func scheduleRestore(
+    runningApplication: NSRunningApplication,
+    bundleIdentifier: String,
+    attemptsRemaining: Int
+  ) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+      self?.restoreAfterAuthentication(
+        runningApplication: runningApplication,
+        bundleIdentifier: bundleIdentifier,
+        attemptsRemaining: attemptsRemaining
+      )
+    }
   }
 
   private func hideThenRequestAuthentication(

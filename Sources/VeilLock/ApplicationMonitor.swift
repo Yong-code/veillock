@@ -35,7 +35,7 @@ final class ApplicationMonitor {
         queue: .main
       ) { [weak self] notification in
         Task { @MainActor [weak self] in
-          self?.handle(notification)
+          self?.hideBeforeLaunch(notification)
         }
       })
 
@@ -229,6 +229,20 @@ final class ApplicationMonitor {
     }
 
     lockCoordinator.lock(protectedApp, runningApplication: application)
+  }
+
+  private func hideBeforeLaunch(_ notification: Notification) {
+    guard settings.protectionEnabled,
+      let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+        as? NSRunningApplication,
+      let bundleIdentifier = application.bundleIdentifier,
+      protectedApps.contains(bundleIdentifier: bundleIdentifier),
+      !lockCoordinator.isUnlocked(bundleIdentifier)
+    else { return }
+
+    // This is only an early hide request. Starting Touch ID here is too early:
+    // some apps cannot reliably unhide until the did-launch lifecycle event.
+    application.hide()
   }
 
   private func handleActiveSpaceChange() {
