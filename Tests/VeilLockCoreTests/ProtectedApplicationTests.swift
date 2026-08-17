@@ -26,4 +26,21 @@ final class ProtectedApplicationTests: XCTestCase {
   func testOrdinaryBundleCanBeProtected() {
     XCTAssertTrue(ProtectionPolicy.canProtect(bundleIdentifier: "com.tencent.xinWeChat"))
   }
+
+  func testPasswordDigestVerifiesOnlyTheOriginalPassword() throws {
+    let salt = Data(repeating: 0x5A, count: PasswordDigest.requiredSaltLength)
+    let digest = try PasswordDigest(
+      password: "correct-horse-battery", salt: salt, iterations: 1_000)
+
+    XCTAssertTrue(digest.verifies("correct-horse-battery"))
+    XCTAssertFalse(digest.verifies("wrong-horse-battery"))
+  }
+
+  func testPasswordDigestRejectsShortPasswords() {
+    let salt = Data(repeating: 0x5A, count: PasswordDigest.requiredSaltLength)
+
+    XCTAssertThrowsError(try PasswordDigest(password: "too-short", salt: salt, iterations: 1_000)) {
+      XCTAssertEqual($0 as? PasswordDigestError, .passwordTooShort)
+    }
+  }
 }

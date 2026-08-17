@@ -14,7 +14,9 @@ let package = Package(
             dependencies: ["VeilLockCore"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("CoreGraphics"),
                 .linkedFramework("LocalAuthentication"),
+                .linkedFramework("Security"),
                 .linkedFramework("ServiceManagement")
             ]
         ),

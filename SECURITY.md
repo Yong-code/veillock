@@ -14,3 +14,4 @@ Please use GitHub's private vulnerability reporting for this repository. Do not 
 - No administrator privileges, Accessibility permission, Screen Recording, camera, microphone, or input monitoring.
 - No application-content inspection; only user-selected app bundle identifiers are stored locally.
 - Touch ID is evaluated by macOS. VeilLock receives only an authentication result, never fingerprint data.
+- An optional configuration password is PBKDF2-derived with a random salt and stored in the local Keychain. It can approve VeilLock configuration changes only after Touch ID cannot do so; it never unlocks a protected app.

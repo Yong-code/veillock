@@ -37,7 +37,7 @@ struct ContentView: View {
       Group {
         switch selection ?? .protectedApps {
         case .protectedApps:
-          ProtectedAppsView()
+          ProtectedAppsView(protectedApps: model.protectedApps)
         case .privacy:
           PrivacySafetyView()
         }
@@ -47,26 +47,28 @@ struct ContentView: View {
       Alert(
         title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("OK")))
     }
+    .sheet(item: $model.configurationPasswordPrompt) { prompt in
+      ConfigurationPasswordVerificationSheet(prompt: prompt)
+    }
+    .sheet(item: $model.configurationPasswordSetup) { _ in
+      ConfigurationPasswordSetupSheet()
+    }
   }
 }
 
 struct ProtectedAppsView: View {
   @EnvironmentObject private var model: AppModel
+  @ObservedObject var protectedApps: ProtectedAppsStore
 
   var body: some View {
     VStack(spacing: 0) {
       HStack(alignment: .top, spacing: 16) {
-        Image(systemName: "lock.shield.fill")
-          .font(.system(size: 32, weight: .semibold))
-          .foregroundStyle(.indigo)
-          .frame(width: 56, height: 56)
-          .background(
-            .indigo.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        VeilLockBrandIcon(size: 56)
 
         VStack(alignment: .leading, spacing: 4) {
           Text("Protected Apps")
             .font(.system(size: 28, weight: .bold, design: .rounded))
-          Text("Selected apps are hidden until Touch ID verifies you.")
+          Text("Selected app windows are veiled until Touch ID verifies you.")
             .foregroundStyle(.secondary)
         }
 
@@ -78,14 +80,14 @@ struct ProtectedAppsView: View {
 
       Divider()
 
-      if model.protectedApps.applications.isEmpty {
+      if protectedApps.applications.isEmpty {
         VStack(spacing: 14) {
           Image(systemName: "lock.open")
             .font(.system(size: 34, weight: .medium))
             .foregroundStyle(.secondary)
           Text("No Apps Protected")
             .font(.title3.weight(.semibold))
-          Text("Add an app to require Touch ID whenever it becomes active.")
+          Text("Add an app to veil its visible window whenever it becomes active.")
             .foregroundStyle(.secondary)
           Button("Add Application") {
             model.chooseApplications()
@@ -96,11 +98,11 @@ struct ProtectedAppsView: View {
       } else {
         List {
           Section {
-            ForEach(model.protectedApps.applications) { application in
+            ForEach(protectedApps.applications) { application in
               ProtectedAppRow(application: application)
             }
           } header: {
-            Text("\(model.protectedApps.applications.count) protected")
+            Text("\(protectedApps.applications.count) protected")
           } footer: {
             Text(
               "VeilLock relocks an app every time it leaves the foreground, after sleep, and after your Mac locks."
@@ -186,6 +188,19 @@ struct ApplicationIcon: View {
   }
 }
 
+struct VeilLockBrandIcon: View {
+  let size: CGFloat
+
+  var body: some View {
+    Image(nsImage: NSApp.applicationIconImage)
+      .resizable()
+      .interpolation(.high)
+      .scaledToFit()
+      .frame(width: size, height: size)
+      .accessibilityLabel("VeilLock")
+  }
+}
+
 struct PrivacySafetyView: View {
   @EnvironmentObject private var model: AppModel
 
@@ -238,12 +253,59 @@ struct PrivacySafetyView: View {
           Color(nsColor: .underPageBackgroundColor),
           in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
+        VStack(alignment: .leading, spacing: 14) {
+          HStack {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Configuration Password")
+                .font(.headline)
+              Text(
+                "Optional Touch ID fallback for changes to VeilLock. It never unlocks a protected app."
+              )
+              .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Label(
+              model.settings.configurationPasswordIsSet ? "Set" : "Not Set",
+              systemImage: model.settings.configurationPasswordIsSet
+                ? "checkmark.circle.fill" : "minus.circle"
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(model.settings.configurationPasswordIsSet ? .green : .secondary)
+          }
+
+          if model.settings.configurationPasswordIsSet {
+            HStack {
+              Button("Change Password…") {
+                model.beginConfigurationPasswordSetup()
+              }
+              Spacer()
+              Button("Remove Password", role: .destructive) {
+                model.removeConfigurationPassword()
+              }
+            }
+          } else {
+            Button("Set Configuration Password…") {
+              model.beginConfigurationPasswordSetup()
+            }
+          }
+
+          Text(
+            "Touch ID is used first. If it is unavailable, fails, or is locked out, this password can approve add, remove, and settings changes instead."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .background(
+          Color(nsColor: .underPageBackgroundColor),
+          in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
         VStack(alignment: .leading, spacing: 8) {
           Label("Important Limit", systemImage: "exclamationmark.triangle.fill")
             .foregroundStyle(.orange)
             .font(.headline)
           Text(
-            "macOS does not offer a public, system-level API for locking arbitrary apps. VeilLock hides a selected app and covers the screen after it launches or becomes active. It is a privacy layer for casual access, not a defense against an administrator or someone with control of your signed-in macOS account."
+            "macOS does not offer a public, system-level API for locking arbitrary apps. VeilLock uses public window geometry to place an interaction-blocking frosted gate over a selected app, falling back to a display cover when that geometry is unavailable. It is a privacy layer for casual access, not a defense against an administrator or someone with control of your signed-in macOS account."
           )
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -283,6 +345,7 @@ struct SafetyCard: View {
 
 struct MenuBarView: View {
   @EnvironmentObject private var model: AppModel
+  @ObservedObject var protectedApps: ProtectedAppsStore
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -290,7 +353,7 @@ struct MenuBarView: View {
         .font(.headline)
         .foregroundStyle(.indigo)
       Text(
-        "\(model.protectedApps.applications.count) app\(model.protectedApps.applications.count == 1 ? "" : "s") protected"
+        "\(protectedApps.applications.count) app\(protectedApps.applications.count == 1 ? "" : "s") protected"
       )
       .font(.caption)
       .foregroundStyle(.secondary)
@@ -314,5 +377,119 @@ struct MenuBarView: View {
     }
     .padding(12)
     .frame(width: 220)
+  }
+}
+
+struct ConfigurationPasswordVerificationSheet: View {
+  @EnvironmentObject private var model: AppModel
+  @Environment(\.dismiss) private var dismiss
+  let prompt: ConfigurationPasswordPrompt
+  @State private var password = ""
+  @State private var errorMessage: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      Image(systemName: "key.fill")
+        .font(.system(size: 30, weight: .semibold))
+        .foregroundStyle(.indigo)
+
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Configuration Password")
+          .font(.title2.weight(.semibold))
+        Text("Touch ID could not approve this change. Use your VeilLock password instead.")
+          .foregroundStyle(.secondary)
+      }
+
+      SecureField("Password", text: $password)
+        .textFieldStyle(.roundedBorder)
+        .onSubmit(submit)
+
+      if let errorMessage {
+        Text(errorMessage)
+          .font(.caption)
+          .foregroundStyle(.red)
+      }
+
+      HStack {
+        Button("Cancel") {
+          model.cancelConfigurationPasswordPrompt()
+          dismiss()
+        }
+        Spacer()
+        Button("Continue", action: submit)
+          .buttonStyle(.borderedProminent)
+          .disabled(password.isEmpty)
+      }
+    }
+    .padding(24)
+    .frame(width: 420)
+    .interactiveDismissDisabled()
+  }
+
+  private func submit() {
+    if let error = model.verifyConfigurationPassword(password) {
+      errorMessage = error
+    } else {
+      dismiss()
+    }
+  }
+}
+
+struct ConfigurationPasswordSetupSheet: View {
+  @EnvironmentObject private var model: AppModel
+  @Environment(\.dismiss) private var dismiss
+  @State private var password = ""
+  @State private var confirmation = ""
+  @State private var errorMessage: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      Image(systemName: "key.horizontal.fill")
+        .font(.system(size: 30, weight: .semibold))
+        .foregroundStyle(.indigo)
+
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Set Configuration Password")
+          .font(.title2.weight(.semibold))
+        Text(
+          "Use 12 or more characters. This password protects VeilLock settings only; it never unlocks a protected app."
+        )
+        .foregroundStyle(.secondary)
+      }
+
+      SecureField("New Password", text: $password)
+        .textFieldStyle(.roundedBorder)
+      SecureField("Confirm Password", text: $confirmation)
+        .textFieldStyle(.roundedBorder)
+        .onSubmit(save)
+
+      if let errorMessage {
+        Text(errorMessage)
+          .font(.caption)
+          .foregroundStyle(.red)
+      }
+
+      HStack {
+        Button("Cancel") {
+          model.cancelConfigurationPasswordSetup()
+          dismiss()
+        }
+        Spacer()
+        Button("Save Password", action: save)
+          .buttonStyle(.borderedProminent)
+          .disabled(password.isEmpty || confirmation.isEmpty)
+      }
+    }
+    .padding(24)
+    .frame(width: 440)
+    .interactiveDismissDisabled()
+  }
+
+  private func save() {
+    if let error = model.saveConfigurationPassword(password, confirmation: confirmation) {
+      errorMessage = error
+    } else {
+      dismiss()
+    }
   }
 }

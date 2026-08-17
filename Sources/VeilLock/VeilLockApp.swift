@@ -16,7 +16,7 @@ struct VeilLockApp: App {
     }
 
     MenuBarExtra("VeilLock", systemImage: model.menuBarSymbol) {
-      MenuBarView()
+      MenuBarView(protectedApps: model.protectedApps)
         .environmentObject(model)
     }
   }

@@ -23,8 +23,7 @@ final class LockCoordinator: ObservableObject {
     lockedApplication = application
     lockedRunningApplication = runningApplication
     authenticationStatus = "Touch ID is required to continue."
-    runningApplication.hide()
-    showPanels(for: application)
+    showPanels(for: application, frames: WindowFrameResolver.visibleFrames(for: runningApplication))
 
     DispatchQueue.main.async { [weak self] in
       self?.requestAuthentication()
@@ -54,10 +53,7 @@ final class LockCoordinator: ObservableObject {
     authenticator?.cancel()
     authenticator = nil
     isAuthenticating = false
-    authenticationStatus = "The application remains hidden."
-    dismissPanels()
-    lockedApplication = nil
-    lockedRunningApplication = nil
+    authenticationStatus = "The app remains protected."
   }
 
   func clearSession(for bundleIdentifier: String) {
@@ -85,10 +81,11 @@ final class LockCoordinator: ObservableObject {
     runningApplication?.activate(options: [.activateIgnoringOtherApps])
   }
 
-  private func showPanels(for application: ProtectedApplication) {
+  private func showPanels(for application: ProtectedApplication, frames: [CGRect]) {
     dismissPanels()
-    for screen in NSScreen.screens {
-      let panel = LockPanel(screen: screen, coordinator: self, application: application)
+    let panelFrames = frames.isEmpty ? NSScreen.screens.map(\.frame) : frames
+    for frame in panelFrames {
+      let panel = LockPanel(frame: frame, coordinator: self, application: application)
       panel.orderFrontRegardless()
       panels.append(panel)
     }
@@ -166,16 +163,16 @@ final class TouchIDAuthenticator {
 }
 
 final class LockPanel: NSPanel {
-  init(screen: NSScreen, coordinator: LockCoordinator, application: ProtectedApplication) {
+  init(frame: CGRect, coordinator: LockCoordinator, application: ProtectedApplication) {
     super.init(
-      contentRect: screen.frame,
+      contentRect: frame,
       styleMask: [.borderless, .nonactivatingPanel],
       backing: .buffered,
       defer: false
     )
-    setFrame(screen.frame, display: false)
-    isOpaque = true
-    backgroundColor = .black
+    setFrame(frame, display: false)
+    isOpaque = false
+    backgroundColor = .clear
     level = .screenSaver
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
     hasShadow = false
@@ -193,11 +190,16 @@ final class LockPanel: NSPanel {
 struct LockScreen: View {
   @ObservedObject var coordinator: LockCoordinator
   let application: ProtectedApplication
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
   var body: some View {
     ZStack {
-      Color.black
-        .ignoresSafeArea()
+      if reduceTransparency {
+        Color.black.opacity(0.94)
+      } else {
+        FrostedBackdrop()
+        Color.black.opacity(0.42)
+      }
 
       VStack(spacing: 18) {
         Image(systemName: "lock.fill")
@@ -233,10 +235,31 @@ struct LockScreen: View {
           .disabled(coordinator.isAuthenticating)
         }
       }
-      .padding(44)
+      .padding(34)
+      .frame(maxWidth: 430)
+      .background(.black.opacity(reduceTransparency ? 0.20 : 0.32))
+      .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+      .overlay {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+          .stroke(.white.opacity(0.12))
+      }
+      .shadow(color: .black.opacity(0.32), radius: 28, y: 12)
     }
+    .ignoresSafeArea()
     .accessibilityElement(children: .contain)
     .accessibilityLabel(
       "\(application.displayName) is protected. Touch ID is required to unlock it.")
   }
+}
+
+struct FrostedBackdrop: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSVisualEffectView {
+    let view = NSVisualEffectView()
+    view.material = .hudWindow
+    view.blendingMode = .behindWindow
+    view.state = .active
+    return view
+  }
+
+  func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }

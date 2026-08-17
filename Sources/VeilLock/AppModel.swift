@@ -13,6 +13,8 @@ final class AppModel: ObservableObject {
   let lockCoordinator = LockCoordinator()
 
   @Published var alert: AppAlert?
+  @Published var configurationPasswordPrompt: ConfigurationPasswordPrompt?
+  @Published var configurationPasswordSetup: ConfigurationPasswordSetup?
   @Published private(set) var monitorIsRunning = false
 
   private lazy var monitor = ApplicationMonitor(
@@ -23,6 +25,8 @@ final class AppModel: ObservableObject {
   private var sleepObserver: NSObjectProtocol?
   private var wakeObserver: NSObjectProtocol?
   private var resignActiveObserver: NSObjectProtocol?
+  private var configurationAuthenticator: TouchIDAuthenticator?
+  private var pendingConfigurationAction: (reason: String, success: () -> Void)?
 
   init() {
     installSessionObservers()
@@ -83,13 +87,81 @@ final class AppModel: ObservableObject {
   }
 
   func authenticateForConfiguration(reason: String, success: @escaping () -> Void) {
+    authenticateWithTouchID(reason: reason, success: success)
+  }
+
+  func verifyConfigurationPassword(_ password: String) -> String? {
+    guard let action = pendingConfigurationAction else { return nil }
+
+    do {
+      guard try ConfigurationPasswordStore.verify(password) else {
+        return "That password is incorrect."
+      }
+      pendingConfigurationAction = nil
+      configurationPasswordPrompt = nil
+      action.success()
+      return nil
+    } catch {
+      return error.localizedDescription
+    }
+  }
+
+  func cancelConfigurationPasswordPrompt() {
+    pendingConfigurationAction = nil
+    configurationPasswordPrompt = nil
+  }
+
+  func beginConfigurationPasswordSetup() {
+    authenticateForConfiguration(reason: "Authorize setting a configuration password") {
+      [weak self] in
+      self?.configurationPasswordSetup = .set
+    }
+  }
+
+  func saveConfigurationPassword(_ password: String, confirmation: String) -> String? {
+    guard password == confirmation else { return "The passwords do not match." }
+    do {
+      try ConfigurationPasswordStore.save(password)
+      settings.refreshConfigurationPasswordState()
+      configurationPasswordSetup = nil
+      return nil
+    } catch {
+      return error.localizedDescription
+    }
+  }
+
+  func cancelConfigurationPasswordSetup() {
+    configurationPasswordSetup = nil
+  }
+
+  func removeConfigurationPassword() {
+    authenticateForConfiguration(reason: "Authorize removing the configuration password") {
+      [weak self] in
+      guard let self else { return }
+      do {
+        try ConfigurationPasswordStore.remove()
+        settings.refreshConfigurationPasswordState()
+      } catch {
+        alert = AppAlert(title: "Could Not Remove Password", message: error.localizedDescription)
+      }
+    }
+  }
+
+  private func authenticateWithTouchID(reason: String, success: @escaping () -> Void) {
     let authenticator = TouchIDAuthenticator()
+    configurationAuthenticator = authenticator
     authenticator.authenticate(reason: reason) { [weak self] result in
+      self?.configurationAuthenticator = nil
       switch result {
       case .success:
         success()
       case .failure(let error):
         if case .cancelled = error { return }
+        if self?.settings.configurationPasswordIsSet == true {
+          self?.pendingConfigurationAction = (reason, success)
+          self?.configurationPasswordPrompt = ConfigurationPasswordPrompt(reason: reason)
+          return
+        }
         self?.alert = AppAlert(title: "Touch ID Required", message: error.localizedDescription)
       }
     }
@@ -159,6 +231,17 @@ struct AppAlert: Identifiable {
   let id = UUID()
 }
 
+struct ConfigurationPasswordPrompt: Identifiable {
+  let reason: String
+  let id = UUID()
+}
+
+enum ConfigurationPasswordSetup: Identifiable {
+  case set
+
+  var id: String { "set" }
+}
+
 @MainActor
 final class ProtectedAppsStore: ObservableObject {
   @Published private(set) var applications: [ProtectedApplication] = []
@@ -220,6 +303,7 @@ final class ProtectedAppsStore: ObservableObject {
 final class GuardSettings: ObservableObject {
   @Published private(set) var protectionEnabled: Bool
   @Published private(set) var launchAtLogin: Bool
+  @Published private(set) var configurationPasswordIsSet: Bool
 
   private let protectionKey = "VeilLock.protectionEnabled"
 
@@ -229,6 +313,7 @@ final class GuardSettings: ObservableObject {
     }
     protectionEnabled = UserDefaults.standard.bool(forKey: protectionKey)
     launchAtLogin = SMAppService.mainApp.status == .enabled
+    configurationPasswordIsSet = ConfigurationPasswordStore.isConfigured
   }
 
   func setLaunchAtLogin(_ enabled: Bool) throws {
@@ -238,5 +323,9 @@ final class GuardSettings: ObservableObject {
       try SMAppService.mainApp.unregister()
     }
     launchAtLogin = SMAppService.mainApp.status == .enabled
+  }
+
+  func refreshConfigurationPasswordState() {
+    configurationPasswordIsSet = ConfigurationPasswordStore.isConfigured
   }
 }
