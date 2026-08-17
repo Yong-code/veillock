@@ -87,7 +87,7 @@ struct ProtectedAppsView: View {
             .foregroundStyle(.secondary)
           Text("No Apps Protected")
             .font(.title3.weight(.semibold))
-          Text("Add an app to veil its visible window whenever it becomes active.")
+          Text("Add an app to hide it and require Touch ID whenever it becomes active.")
             .foregroundStyle(.secondary)
           Button("Add Application") {
             model.chooseApplications()
@@ -307,7 +307,7 @@ struct PrivacySafetyView: View {
             .foregroundStyle(.orange)
             .font(.headline)
           Text(
-            "macOS does not offer a public, system-level API for locking arbitrary apps. VeilLock records only the selected app's public window geometry, hides that app, and puts a frosted lock panel over its last visible bounds. If macOS cannot supply window geometry, it uses the active display. It is a privacy layer for casual access, not a defense against an administrator or someone with control of your signed-in macOS account."
+            "macOS does not offer a public, system-level API for locking arbitrary apps. VeilLock hides the selected app and uses only the macOS Touch ID system dialog. Public window geometry is used only for re-lock timing; VeilLock does not capture, blur, or inspect app content. It is a privacy layer for casual access, not a defense against an administrator or someone with control of your signed-in macOS account."
           )
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
