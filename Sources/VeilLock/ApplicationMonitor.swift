@@ -177,6 +177,15 @@ final class ApplicationMonitor {
     }
   }
 
+  func stopTrackingUnlockedApplications() {
+    for bundleIdentifier in trackedUnlockedBundleIdentifiers {
+      cancelAutomaticRelocking(for: bundleIdentifier)
+    }
+    trackedUnlockedBundleIdentifiers.removeAll()
+    windowVisibilityTimer?.invalidate()
+    windowVisibilityTimer = nil
+  }
+
   func removeProtection(for bundleIdentifier: String) {
     cancelAutomaticRelocking(for: bundleIdentifier)
     endTrackingUnlockedApplication(bundleIdentifier)
@@ -221,6 +230,10 @@ final class ApplicationMonitor {
 
     cancelDeactivationRelock(for: bundleIdentifier)
     if lockCoordinator.isUnlocked(bundleIdentifier) {
+      // Authentication succeeded, but the target window is still being
+      // restored. Starting automatic re-lock timing now could immediately
+      // relock a slow-to-reopen app before its window appears.
+      guard !lockCoordinator.isRestoring(bundleIdentifier) else { return }
       beginTrackingUnlockedApplication(bundleIdentifier)
       if application.isActive {
         scheduleActiveReauthentication(for: bundleIdentifier)
@@ -270,7 +283,8 @@ final class ApplicationMonitor {
 
   private func handleDeactivation(bundleIdentifier: String) {
     cancelActiveReauthentication(for: bundleIdentifier)
-    guard lockCoordinator.isUnlocked(bundleIdentifier) else { return }
+    guard lockCoordinator.isUnlocked(bundleIdentifier), !lockCoordinator.isRestoring(bundleIdentifier)
+    else { return }
     beginTrackingUnlockedApplication(bundleIdentifier)
     scheduleDeactivationRelock(for: bundleIdentifier)
   }
@@ -329,6 +343,9 @@ final class ApplicationMonitor {
       }
 
       let hasVisibleWindow = WindowFrameResolver.primaryVisibleFrame(for: runningApplication) != nil
+      if lockCoordinator.isRestoring(bundleIdentifier) {
+        continue
+      }
       if !lockCoordinator.isUnlocked(bundleIdentifier) {
         if runningApplication.isActive,
           hasVisibleWindow,
@@ -396,6 +413,7 @@ final class ApplicationMonitor {
 
   private func expireSession(for bundleIdentifier: String) {
     cancelAutomaticRelocking(for: bundleIdentifier)
+    endTrackingUnlockedApplication(bundleIdentifier)
     lockCoordinator.clearSession(for: bundleIdentifier)
 
     guard settings.protectionEnabled,

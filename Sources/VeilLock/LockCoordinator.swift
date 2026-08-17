@@ -9,6 +9,7 @@ final class LockCoordinator: ObservableObject {
   @Published private(set) var isAuthenticating = false
 
   private var unlockedBundleIdentifiers: Set<String> = []
+  private var restoringBundleIdentifiers: Set<String> = []
   private var pendingApplication: ProtectedApplication?
   private var pendingRunningApplication: NSRunningApplication?
   private var authenticatingApplication: ProtectedApplication?
@@ -17,6 +18,10 @@ final class LockCoordinator: ObservableObject {
 
   func isUnlocked(_ bundleIdentifier: String) -> Bool {
     unlockedBundleIdentifiers.contains(bundleIdentifier)
+  }
+
+  func isRestoring(_ bundleIdentifier: String) -> Bool {
+    restoringBundleIdentifiers.contains(bundleIdentifier)
   }
 
   func lock(_ application: ProtectedApplication, runningApplication: NSRunningApplication) {
@@ -85,25 +90,31 @@ final class LockCoordinator: ObservableObject {
 
   func clearSession(for bundleIdentifier: String) {
     unlockedBundleIdentifiers.remove(bundleIdentifier)
+    restoringBundleIdentifiers.remove(bundleIdentifier)
     guard requestIncludes(bundleIdentifier) else { return }
     cancelCurrentRequest(status: "The app remains protected.")
   }
 
   func clearSessions() {
     unlockedBundleIdentifiers.removeAll()
+    restoringBundleIdentifiers.removeAll()
     cancelCurrentRequest(status: "The app remains protected.")
   }
 
   private func unlock(application: ProtectedApplication, runningApplication: NSRunningApplication) {
     unlockedBundleIdentifiers.insert(application.bundleIdentifier)
+    restoringBundleIdentifiers.insert(application.bundleIdentifier)
     finishActiveRequest(status: "")
 
-    onApplicationUnlocked?(application.bundleIdentifier)
-    restoreAfterAuthentication(
-      runningApplication: runningApplication,
-      bundleIdentifier: application.bundleIdentifier,
-      attemptsRemaining: 40
-    )
+    // Let the system-owned LocalAuthentication sheet finish dismissing before
+    // attempting to hand activation back to the protected application.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+      self?.restoreAfterAuthentication(
+        runningApplication: runningApplication,
+        bundleIdentifier: application.bundleIdentifier,
+        attemptsRemaining: 40
+      )
+    }
   }
 
   private func restoreAfterAuthentication(
@@ -111,27 +122,45 @@ final class LockCoordinator: ObservableObject {
     bundleIdentifier: String,
     attemptsRemaining: Int
   ) {
-    guard isUnlocked(bundleIdentifier), !runningApplication.isTerminated else { return }
+    guard isUnlocked(bundleIdentifier) else { return }
+    guard let application = currentRunningApplication(
+      for: bundleIdentifier, fallback: runningApplication
+    ) else {
+      restoreWithWorkspace(
+        fallbackRunningApplication: runningApplication,
+        bundleIdentifier: bundleIdentifier
+      )
+      return
+    }
 
     // Most regular apps report this promptly. Apple documents that some apps
     // never do, so after one second we fall back to repeated restore attempts.
-    if !runningApplication.isFinishedLaunching, attemptsRemaining > 20 {
+    if !application.isFinishedLaunching, attemptsRemaining > 20 {
       scheduleRestore(
-        runningApplication: runningApplication,
+        runningApplication: application,
         bundleIdentifier: bundleIdentifier,
         attemptsRemaining: attemptsRemaining - 1
       )
       return
     }
 
-    let didUnhide = runningApplication.unhide()
-    let didActivate = runningApplication.activate(options: [.activateIgnoringOtherApps])
-    guard attemptsRemaining > 0, (!didUnhide || !didActivate || runningApplication.isHidden) else {
+    _ = application.unhide()
+    _ = activate(application)
+    if isRestored(application) {
+      finishSuccessfulRestore(for: bundleIdentifier)
+      return
+    }
+
+    guard attemptsRemaining > 0 else {
+      restoreWithWorkspace(
+        fallbackRunningApplication: application,
+        bundleIdentifier: bundleIdentifier
+      )
       return
     }
 
     scheduleRestore(
-      runningApplication: runningApplication,
+      runningApplication: application,
       bundleIdentifier: bundleIdentifier,
       attemptsRemaining: attemptsRemaining - 1
     )
@@ -149,6 +178,127 @@ final class LockCoordinator: ObservableObject {
         attemptsRemaining: attemptsRemaining
       )
     }
+  }
+
+  private func activate(_ runningApplication: NSRunningApplication) -> Bool {
+    if #available(macOS 14.0, *) {
+      return runningApplication.activate(
+        from: .current,
+        options: [.activateAllWindows]
+      )
+    }
+    return runningApplication.activate(options: [.activateAllWindows])
+  }
+
+  private func currentRunningApplication(
+    for bundleIdentifier: String,
+    fallback: NSRunningApplication
+  ) -> NSRunningApplication? {
+    if !fallback.isTerminated { return fallback }
+    return NSWorkspace.shared.runningApplications.first {
+      $0.bundleIdentifier == bundleIdentifier && !$0.isTerminated
+    }
+  }
+
+  private func isRestored(_ application: NSRunningApplication) -> Bool {
+    !application.isHidden
+      && application.isActive
+      && WindowFrameResolver.primaryVisibleFrame(for: application) != nil
+  }
+
+  private func restoreWithWorkspace(
+    fallbackRunningApplication: NSRunningApplication,
+    bundleIdentifier: String
+  ) {
+    guard isUnlocked(bundleIdentifier),
+      let applicationURL = currentRunningApplication(
+        for: bundleIdentifier, fallback: fallbackRunningApplication
+      )?.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+    else {
+      finishUnsuccessfulRestore(for: bundleIdentifier)
+      return
+    }
+
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = true
+    configuration.hides = false
+    configuration.allowsRunningApplicationSubstitution = true
+    // Ask Launch Services to deliver the standard reopen event when the app is
+    // already running but has no visible window (for example, after its red
+    // close button was used). This is a system launch request, not scripting.
+    configuration.appleEvent = NSAppleEventDescriptor(
+      eventClass: AEEventClass(0x6165_7674),  // 'aevt'
+      eventID: AEEventID(0x7261_7070),  // 'rapp'
+      targetDescriptor: nil,
+      returnID: AEReturnID(kAutoGenerateReturnID),
+      transactionID: AETransactionID(kAnyTransactionID)
+    )
+    NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration) {
+      [weak self] restoredApplication, error in
+      Task { @MainActor [weak self] in
+        guard let self, self.isUnlocked(bundleIdentifier) else { return }
+        guard error == nil else {
+          self.finishUnsuccessfulRestore(for: bundleIdentifier)
+          return
+        }
+
+        guard let applicationToRestore = restoredApplication ?? self.currentRunningApplication(
+          for: bundleIdentifier, fallback: fallbackRunningApplication
+        ) else {
+          self.finishUnsuccessfulRestore(for: bundleIdentifier)
+          return
+        }
+        self.confirmWorkspaceRestore(
+          runningApplication: applicationToRestore,
+          bundleIdentifier: bundleIdentifier,
+          attemptsRemaining: 20
+        )
+      }
+    }
+  }
+
+  private func confirmWorkspaceRestore(
+    runningApplication: NSRunningApplication,
+    bundleIdentifier: String,
+    attemptsRemaining: Int
+  ) {
+    guard isUnlocked(bundleIdentifier), !runningApplication.isTerminated else {
+      finishUnsuccessfulRestore(for: bundleIdentifier)
+      return
+    }
+
+    _ = runningApplication.unhide()
+    _ = activate(runningApplication)
+    if isRestored(runningApplication) {
+      finishSuccessfulRestore(for: bundleIdentifier)
+      return
+    }
+
+    guard attemptsRemaining > 0 else {
+      finishUnsuccessfulRestore(for: bundleIdentifier)
+      return
+    }
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      self?.confirmWorkspaceRestore(
+        runningApplication: runningApplication,
+        bundleIdentifier: bundleIdentifier,
+        attemptsRemaining: attemptsRemaining - 1
+      )
+    }
+  }
+
+  private func finishUnsuccessfulRestore(for bundleIdentifier: String) {
+    unlockedBundleIdentifiers.remove(bundleIdentifier)
+    restoringBundleIdentifiers.remove(bundleIdentifier)
+    authenticationStatus = "Could not restore the application. It remains protected."
+  }
+
+  private func finishSuccessfulRestore(for bundleIdentifier: String) {
+    guard isUnlocked(bundleIdentifier), restoringBundleIdentifiers.remove(bundleIdentifier) != nil else {
+      return
+    }
+    onApplicationUnlocked?(bundleIdentifier)
   }
 
   private func hideThenRequestAuthentication(

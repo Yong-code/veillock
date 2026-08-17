@@ -59,6 +59,7 @@ final class AppModel: ObservableObject {
 
   func lockAllNow() {
     lockCoordinator.clearSessions()
+    monitor.stopTrackingUnlockedApplications()
     monitor.hideProtectedRunningApplications()
   }
 
