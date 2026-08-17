@@ -74,6 +74,7 @@ final class AppModel: ObservableObject {
       [weak self] in
       self?.protectedApps.remove(application)
       self?.lockCoordinator.clearSession(for: application.bundleIdentifier)
+      self?.monitor.removeProtection(for: application.bundleIdentifier)
     }
   }
 
@@ -228,7 +229,7 @@ final class AppModel: ObservableObject {
       queue: .main
     ) { [weak self] _ in
       Task { @MainActor [weak self] in
-        self?.lockCoordinator.clearSessions()
+        self?.lockAllNow()
       }
     }
     resignActiveObserver = center.addObserver(

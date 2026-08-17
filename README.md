@@ -28,10 +28,10 @@ That makes VeilLock appropriate for **casual physical privacy** when lending a M
 ## How it works
 
 1. Add an app in **Protected Apps**. Configuration changes use Touch ID; an optional local configuration password is available only as a fallback.
-2. VeilLock listens only for macOS application launch, activation, deactivation, and session notifications.
+2. VeilLock uses only public macOS workspace notifications for launch, activation, hiding, Space changes, and session changes.
 3. When a protected app becomes active, VeilLock waits until macOS confirms that it is hidden, then displays only the macOS Touch ID system dialog.
 4. Successful Touch ID authentication restores that app. Your automatic re-locking schedule determines when a later use requires Touch ID again.
-5. If you change Spaces while the macOS Touch ID prompt is open, VeilLock cancels that request rather than letting the system prompt follow into another app's full-screen space. Returning to the protected app starts a new request.
+5. If you change Spaces while the macOS Touch ID prompt is open, VeilLock cancels that request and immediately re-hides every still-locked protected app. Returning to a protected app starts a fresh request.
 
 ## Automatic re-locking
 

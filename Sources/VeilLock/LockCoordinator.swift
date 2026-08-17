@@ -5,14 +5,14 @@ import VeilLockCore
 
 @MainActor
 final class LockCoordinator: ObservableObject {
-  @Published private(set) var lockedApplication: ProtectedApplication?
   @Published private(set) var authenticationStatus = ""
   @Published private(set) var isAuthenticating = false
 
   private var unlockedBundleIdentifiers: Set<String> = []
-  private var lockedRunningApplication: NSRunningApplication?
+  private var pendingApplication: ProtectedApplication?
+  private var pendingRunningApplication: NSRunningApplication?
+  private var authenticatingApplication: ProtectedApplication?
   private var authenticator: TouchIDAuthenticator?
-  private var pendingHiddenApplicationIdentifier: String?
   var onApplicationUnlocked: ((String) -> Void)?
 
   func isUnlocked(_ bundleIdentifier: String) -> Bool {
@@ -22,26 +22,25 @@ final class LockCoordinator: ObservableObject {
   func lock(_ application: ProtectedApplication, runningApplication: NSRunningApplication) {
     guard !isUnlocked(application.bundleIdentifier) else { return }
 
-    if let lockedApplication {
-      guard lockedApplication.bundleIdentifier == application.bundleIdentifier else {
-        // A system Touch ID request can authenticate only one app at a time.
-        // Keep every other protected app hidden until the current request ends.
-        runningApplication.hide()
-        return
-      }
-      lockedRunningApplication = runningApplication
-      guard !isAuthenticating else {
-        runningApplication.hide()
-        return
-      }
-      hideThenRequestAuthentication(for: application, runningApplication: runningApplication)
+    // macOS permits one LocalAuthentication request at a time. Every other
+    // protected app remains hidden until the active request ends.
+    guard !isAuthenticating else {
+      runningApplication.hide()
       return
     }
 
-    lockedApplication = application
-    lockedRunningApplication = runningApplication
-    authenticationStatus = "Touch ID is required to continue."
+    if let pendingApplication {
+      guard pendingApplication.bundleIdentifier == application.bundleIdentifier else {
+        runningApplication.hide()
+        return
+      }
+      pendingRunningApplication = runningApplication
+      runningApplication.hide()
+      scheduleHiddenStateCheck(for: application.bundleIdentifier)
+      return
+    }
 
+    authenticationStatus = "Touch ID is required to continue."
     hideThenRequestAuthentication(for: application, runningApplication: runningApplication)
   }
 
@@ -49,8 +48,15 @@ final class LockCoordinator: ObservableObject {
     requestAuthenticationIfApplicationIsHidden(bundleIdentifier: bundleIdentifier)
   }
 
-  func requestAuthentication() {
-    guard let application = lockedApplication, !isAuthenticating else { return }
+  private func requestAuthentication() {
+    guard let application = pendingApplication,
+      let runningApplication = pendingRunningApplication,
+      !isAuthenticating
+    else { return }
+
+    pendingApplication = nil
+    pendingRunningApplication = nil
+    authenticatingApplication = application
     isAuthenticating = true
     authenticationStatus = "Waiting for Touch ID…"
 
@@ -59,60 +65,49 @@ final class LockCoordinator: ObservableObject {
     authenticator.authenticate(reason: "Unlock \(application.displayName)") { [weak self] result in
       guard let self else { return }
       guard self.authenticator === authenticator else { return }
-      self.isAuthenticating = false
+      self.authenticator = nil
       switch result {
       case .success:
-        self.unlockCurrentApplication()
+        self.unlock(application: application, runningApplication: runningApplication)
       case .failure(let error):
-        self.authenticationStatus = error.localizedDescription
+        self.finishActiveRequest(status: error.localizedDescription)
       }
     }
   }
 
   func keepCurrentApplicationLocked() {
-    pendingHiddenApplicationIdentifier = nil
-    cancelAuthentication(status: "The app remains protected.")
+    cancelCurrentRequest(status: "The app remains protected.")
   }
 
   func cancelAuthenticationForSpaceChange() {
-    pendingHiddenApplicationIdentifier = nil
-    guard isAuthenticating else {
-      authenticationStatus = "The app remains protected."
-      return
-    }
-    cancelAuthentication(status: "The app remains protected.")
+    cancelCurrentRequest(status: "The app remains protected.")
   }
 
   func clearSession(for bundleIdentifier: String) {
     unlockedBundleIdentifiers.remove(bundleIdentifier)
+    guard requestIncludes(bundleIdentifier) else { return }
+    cancelCurrentRequest(status: "The app remains protected.")
   }
 
   func clearSessions() {
     unlockedBundleIdentifiers.removeAll()
-    if lockedApplication != nil {
-      keepCurrentApplicationLocked()
-    }
+    cancelCurrentRequest(status: "The app remains protected.")
   }
 
-  private func unlockCurrentApplication() {
-    guard let application = lockedApplication else { return }
-    let runningApplication = lockedRunningApplication
+  private func unlock(application: ProtectedApplication, runningApplication: NSRunningApplication) {
     unlockedBundleIdentifiers.insert(application.bundleIdentifier)
-    lockedApplication = nil
-    lockedRunningApplication = nil
-    pendingHiddenApplicationIdentifier = nil
-    authenticator = nil
-    authenticationStatus = ""
+    finishActiveRequest(status: "")
 
     onApplicationUnlocked?(application.bundleIdentifier)
-    runningApplication?.unhide()
-    runningApplication?.activate(options: [.activateIgnoringOtherApps])
+    runningApplication.unhide()
+    runningApplication.activate(options: [.activateIgnoringOtherApps])
   }
 
   private func hideThenRequestAuthentication(
     for application: ProtectedApplication, runningApplication: NSRunningApplication
   ) {
-    pendingHiddenApplicationIdentifier = application.bundleIdentifier
+    pendingApplication = application
+    pendingRunningApplication = runningApplication
 
     // The protected app must be hidden before the macOS authentication prompt
     // is allowed to appear. This does not use screen capture or an overlay.
@@ -127,35 +122,44 @@ final class LockCoordinator: ObservableObject {
   private func scheduleHiddenStateCheck(for bundleIdentifier: String) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
       guard let self,
-        self.pendingHiddenApplicationIdentifier == bundleIdentifier,
-        self.lockedApplication?.bundleIdentifier == bundleIdentifier,
+        self.pendingApplication?.bundleIdentifier == bundleIdentifier,
         !self.isAuthenticating
       else { return }
 
-      if self.lockedRunningApplication?.isHidden == true {
+      if self.pendingRunningApplication?.isHidden == true {
         self.requestAuthenticationIfApplicationIsHidden(bundleIdentifier: bundleIdentifier)
       } else {
-        self.lockedRunningApplication?.hide()
+        self.pendingRunningApplication?.hide()
         self.scheduleHiddenStateCheck(for: bundleIdentifier)
       }
     }
   }
 
   private func requestAuthenticationIfApplicationIsHidden(bundleIdentifier: String) {
-    guard pendingHiddenApplicationIdentifier == bundleIdentifier,
-      lockedApplication?.bundleIdentifier == bundleIdentifier,
-      lockedRunningApplication?.isHidden == true,
+    guard pendingApplication?.bundleIdentifier == bundleIdentifier,
+      pendingRunningApplication?.isHidden == true,
       !isAuthenticating
     else { return }
 
-    pendingHiddenApplicationIdentifier = nil
     requestAuthentication()
   }
 
-  private func cancelAuthentication(status: String) {
+  private func requestIncludes(_ bundleIdentifier: String) -> Bool {
+    pendingApplication?.bundleIdentifier == bundleIdentifier
+      || authenticatingApplication?.bundleIdentifier == bundleIdentifier
+  }
+
+  private func cancelCurrentRequest(status: String) {
     authenticator?.cancel()
     authenticator = nil
+    pendingApplication = nil
+    pendingRunningApplication = nil
+    finishActiveRequest(status: status)
+  }
+
+  private func finishActiveRequest(status: String) {
     isAuthenticating = false
+    authenticatingApplication = nil
     authenticationStatus = status
   }
 }

@@ -15,6 +15,7 @@ final class ApplicationMonitor {
   private var activeReauthenticationWorkItems: [String: DispatchWorkItem] = [:]
   private var trackedUnlockedBundleIdentifiers: Set<String> = []
   private var windowVisibilityTimer: Timer?
+  private var lockedApplicationVisibilityTimer: Timer?
 
   init(protectedApps: ProtectedAppsStore, settings: GuardSettings, lockCoordinator: LockCoordinator)
   {
@@ -26,6 +27,17 @@ final class ApplicationMonitor {
   func start() {
     guard !isMonitoring else { return }
     let center = NSWorkspace.shared.notificationCenter
+
+    observers.append(
+      center.addObserver(
+        forName: NSWorkspace.willLaunchApplicationNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] notification in
+        Task { @MainActor [weak self] in
+          self?.handle(notification)
+        }
+      })
 
     observers.append(
       center.addObserver(
@@ -56,7 +68,7 @@ final class ApplicationMonitor {
         queue: .main
       ) { [weak self] _ in
         Task { @MainActor [weak self] in
-          self?.lockCoordinator.cancelAuthenticationForSpaceChange()
+          self?.handleActiveSpaceChange()
         }
       })
 
@@ -73,6 +85,17 @@ final class ApplicationMonitor {
         else { return }
         Task { @MainActor [weak self] in
           self?.lockCoordinator.applicationDidHide(bundleIdentifier: bundleIdentifier)
+        }
+      })
+
+    observers.append(
+      center.addObserver(
+        forName: NSWorkspace.didUnhideApplicationNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] notification in
+        Task { @MainActor [weak self] in
+          self?.handleUnhide(notification)
         }
       })
 
@@ -109,6 +132,7 @@ final class ApplicationMonitor {
       })
 
     isMonitoring = true
+    startLockedApplicationVisibilityMonitoring()
   }
 
   deinit {
@@ -116,6 +140,7 @@ final class ApplicationMonitor {
       NSWorkspace.shared.notificationCenter.removeObserver(observer)
     }
     windowVisibilityTimer?.invalidate()
+    lockedApplicationVisibilityTimer?.invalidate()
     for item in deactivationRelockWorkItems.values { item.cancel() }
     for item in windowClosureRelockWorkItems.values { item.cancel() }
     for item in activeReauthenticationWorkItems.values { item.cancel() }
@@ -150,6 +175,11 @@ final class ApplicationMonitor {
       else { continue }
       application.hide()
     }
+  }
+
+  func removeProtection(for bundleIdentifier: String) {
+    cancelAutomaticRelocking(for: bundleIdentifier)
+    endTrackingUnlockedApplication(bundleIdentifier)
   }
 
   func didUnlockApplication(bundleIdentifier: String) {
@@ -201,6 +231,29 @@ final class ApplicationMonitor {
     lockCoordinator.lock(protectedApp, runningApplication: application)
   }
 
+  private func handleActiveSpaceChange() {
+    lockCoordinator.cancelAuthenticationForSpaceChange()
+    hideLockedProtectedRunningApplications()
+    DispatchQueue.main.async { [weak self] in
+      self?.hideLockedProtectedRunningApplications()
+    }
+  }
+
+  private func handleUnhide(_ notification: Notification) {
+    guard settings.protectionEnabled,
+      let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+        as? NSRunningApplication,
+      let bundleIdentifier = application.bundleIdentifier,
+      protectedApps.contains(bundleIdentifier: bundleIdentifier),
+      !lockCoordinator.isUnlocked(bundleIdentifier)
+    else { return }
+
+    // A Space transition can make a hidden app visible without an activation
+    // event. Re-hide it here; the next explicit launch or activation starts
+    // the Touch ID request.
+    application.hide()
+  }
+
   private func handleDeactivation(bundleIdentifier: String) {
     cancelActiveReauthentication(for: bundleIdentifier)
     guard lockCoordinator.isUnlocked(bundleIdentifier) else { return }
@@ -221,6 +274,29 @@ final class ApplicationMonitor {
       Task { @MainActor [weak self] in
         self?.checkTrackedWindowVisibility()
       }
+    }
+  }
+
+  private func startLockedApplicationVisibilityMonitoring() {
+    guard lockedApplicationVisibilityTimer == nil else { return }
+    let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+      Task { @MainActor [weak self] in
+        self?.hideLockedProtectedRunningApplications()
+      }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    lockedApplicationVisibilityTimer = timer
+  }
+
+  private func hideLockedProtectedRunningApplications() {
+    guard settings.protectionEnabled else { return }
+    for application in NSWorkspace.shared.runningApplications {
+      guard let bundleIdentifier = application.bundleIdentifier,
+        protectedApps.contains(bundleIdentifier: bundleIdentifier),
+        !lockCoordinator.isUnlocked(bundleIdentifier),
+        !application.isHidden
+      else { continue }
+      application.hide()
     }
   }
 
