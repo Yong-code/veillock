@@ -175,6 +175,7 @@ final class ApplicationMonitor {
   }
 
   private func handleDeactivation(bundleIdentifier: String) {
+    lockCoordinator.cancelAuthentication(for: bundleIdentifier)
     cancelActiveReauthentication(for: bundleIdentifier)
     guard lockCoordinator.isUnlocked(bundleIdentifier) else { return }
     beginTrackingUnlockedApplication(bundleIdentifier)
@@ -211,7 +212,7 @@ final class ApplicationMonitor {
         continue
       }
 
-      let hasVisibleWindow = WindowFrameResolver.foremostVisibleFrame(for: runningApplication) != nil
+      let hasVisibleWindow = WindowFrameResolver.primaryVisibleFrame(for: runningApplication) != nil
       if !lockCoordinator.isUnlocked(bundleIdentifier) {
         if runningApplication.isActive,
           hasVisibleWindow,
@@ -284,7 +285,7 @@ final class ApplicationMonitor {
     guard settings.protectionEnabled,
       let runningApplication = runningApplication(for: bundleIdentifier),
       runningApplication.isActive,
-      WindowFrameResolver.foremostVisibleFrame(for: runningApplication) != nil,
+      WindowFrameResolver.primaryVisibleFrame(for: runningApplication) != nil,
       let protectedApp = protectedApplication(for: bundleIdentifier)
     else { return }
     lockCoordinator.lock(protectedApp, runningApplication: runningApplication)
