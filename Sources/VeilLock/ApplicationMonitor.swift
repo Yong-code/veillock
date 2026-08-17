@@ -62,6 +62,22 @@ final class ApplicationMonitor {
 
     observers.append(
       center.addObserver(
+        forName: NSWorkspace.didHideApplicationNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] notification in
+        guard
+          let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+            as? NSRunningApplication,
+          let bundleIdentifier = application.bundleIdentifier
+        else { return }
+        Task { @MainActor [weak self] in
+          self?.lockCoordinator.applicationDidHide(bundleIdentifier: bundleIdentifier)
+        }
+      })
+
+    observers.append(
+      center.addObserver(
         forName: NSWorkspace.didDeactivateApplicationNotification,
         object: nil,
         queue: .main
