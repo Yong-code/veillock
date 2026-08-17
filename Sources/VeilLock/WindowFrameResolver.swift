@@ -2,13 +2,17 @@ import AppKit
 import CoreGraphics
 
 enum WindowFrameResolver {
-  /// Returns only geometry owned by the target process. It does not capture or inspect window content.
-  static func visibleFrames(for application: NSRunningApplication) -> [CGRect] {
+  /// Returns the frontmost visible window owned by the target process.
+  /// This reads geometry only; it never captures or inspects window content.
+  static func foremostVisibleFrame(for application: NSRunningApplication) -> CGRect? {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]
-    else { return [] }
+    else { return nil }
 
-    let frames = windowList.compactMap { info -> CGRect? in
+    // CGWindowList is ordered from front to back. Taking only the first matching
+    // window avoids treating helper or background windows from the same app as
+    // additional lock targets.
+    for info in windowList {
       guard
         let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
         ownerPID == application.processIdentifier,
@@ -17,16 +21,13 @@ enum WindowFrameResolver {
         let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
         frame.width > 1,
         frame.height > 1
-      else { return nil }
+      else { continue }
 
       let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
-      return alpha > 0 ? frame : nil
+      if alpha > 0 {
+        return frame
+      }
     }
-
-    var uniqueFrames: [CGRect] = []
-    for frame in frames where !uniqueFrames.contains(where: { $0.equalTo(frame) }) {
-      uniqueFrames.append(frame)
-    }
-    return uniqueFrames.sorted { ($0.width * $0.height) > ($1.width * $1.height) }
+    return nil
   }
 }

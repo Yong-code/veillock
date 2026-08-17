@@ -68,7 +68,7 @@ struct ProtectedAppsView: View {
         VStack(alignment: .leading, spacing: 4) {
           Text("Protected Apps")
             .font(.system(size: 28, weight: .bold, design: .rounded))
-          Text("Selected app windows are veiled until Touch ID verifies you.")
+          Text("Selected apps are hidden until Touch ID verifies you.")
             .foregroundStyle(.secondary)
         }
 
@@ -105,7 +105,7 @@ struct ProtectedAppsView: View {
             Text("\(protectedApps.applications.count) protected")
           } footer: {
             Text(
-              "VeilLock relocks an app every time it leaves the foreground, after sleep, and after your Mac locks."
+              "VeilLock follows your automatic re-locking schedule and always relocks after sleep, when your Mac locks, and when you choose Lock All Now."
             )
           }
         }
@@ -253,6 +253,8 @@ struct PrivacySafetyView: View {
           Color(nsColor: .underPageBackgroundColor),
           in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
+        AutomaticRelockingCard()
+
         VStack(alignment: .leading, spacing: 14) {
           HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -305,7 +307,7 @@ struct PrivacySafetyView: View {
             .foregroundStyle(.orange)
             .font(.headline)
           Text(
-            "macOS does not offer a public, system-level API for locking arbitrary apps. VeilLock uses public window geometry to place an interaction-blocking frosted gate over a selected app, falling back to a display cover when that geometry is unavailable. It is a privacy layer for casual access, not a defense against an administrator or someone with control of your signed-in macOS account."
+            "macOS does not offer a public, system-level API for locking arbitrary apps. VeilLock records only the selected app's public window geometry, hides that app, and puts a frosted lock panel over its last visible bounds. If macOS cannot supply window geometry, it uses the active display. It is a privacy layer for casual access, not a defense against an administrator or someone with control of your signed-in macOS account."
           )
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -317,6 +319,106 @@ struct PrivacySafetyView: View {
       .padding(32)
     }
     .navigationTitle("Privacy & Safety")
+  }
+}
+
+struct AutomaticRelockingCard: View {
+  @EnvironmentObject private var model: AppModel
+  @State private var afterWindowClosesOrLeavesMinutes = 0.0
+  @State private var activeReauthenticationMinutes = 0.0
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Label("Automatic Re-locking", systemImage: "timer")
+        .font(.headline)
+
+      Text("These timings apply to every protected app. Saving changes requires Touch ID or your configuration password.")
+        .foregroundStyle(.secondary)
+
+      VStack(alignment: .leading, spacing: 8) {
+        HStack {
+          Text("After a protected window closes or leaves the foreground")
+          Spacer()
+          Text(relockDelayLabel)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+        }
+        Slider(value: $afterWindowClosesOrLeavesMinutes, in: 0...120, step: 1)
+        Text(
+          afterWindowClosesOrLeavesMinutes == 0
+            ? "Lock at the next opening immediately."
+            : "Keep the app unlocked for up to \(minutePhrase(afterWindowClosesOrLeavesMinutes)) before requiring Touch ID again."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+
+      Divider()
+
+      VStack(alignment: .leading, spacing: 8) {
+        HStack {
+          Text("While a protected window remains open")
+          Spacer()
+          Text(activeReauthenticationLabel)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+        }
+        Slider(value: $activeReauthenticationMinutes, in: 0...120, step: 1)
+        Text(
+          activeReauthenticationMinutes == 0
+            ? "No timed re-authentication while you continue using the app."
+            : "Require Touch ID again after \(minutePhrase(activeReauthenticationMinutes)) of continuous use."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+
+      HStack {
+        Spacer()
+        Button {
+          model.updateAutomaticRelocking(
+            afterWindowClosesOrLeavesMinutes: afterWindowClosesOrLeavesMinutes,
+            activeReauthenticationMinutes: activeReauthenticationMinutes
+          )
+        } label: {
+          Label("Save Automatic Re-locking", systemImage: "checkmark")
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!hasUnsavedChanges)
+      }
+    }
+    .padding(20)
+    .background(
+      Color(nsColor: .underPageBackgroundColor),
+      in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .onAppear {
+      resetToSavedValues()
+    }
+  }
+
+  private var hasUnsavedChanges: Bool {
+    afterWindowClosesOrLeavesMinutes != model.settings.relockAfterWindowClosesOrLeavesMinutes
+      || activeReauthenticationMinutes != model.settings.activeReauthenticationMinutes
+  }
+
+  private var relockDelayLabel: String {
+    afterWindowClosesOrLeavesMinutes == 0
+      ? "Immediately" : minutePhrase(afterWindowClosesOrLeavesMinutes)
+  }
+
+  private var activeReauthenticationLabel: String {
+    activeReauthenticationMinutes == 0
+      ? "Never" : minutePhrase(activeReauthenticationMinutes)
+  }
+
+  private func minutePhrase(_ value: Double) -> String {
+    let minutes = Int(value)
+    return minutes == 1 ? "1 minute" : "\(minutes) minutes"
+  }
+
+  private func resetToSavedValues() {
+    afterWindowClosesOrLeavesMinutes = model.settings.relockAfterWindowClosesOrLeavesMinutes
+    activeReauthenticationMinutes = model.settings.activeReauthenticationMinutes
   }
 }
 

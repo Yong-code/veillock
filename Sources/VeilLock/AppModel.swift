@@ -29,6 +29,9 @@ final class AppModel: ObservableObject {
   private var pendingConfigurationAction: (reason: String, success: () -> Void)?
 
   init() {
+    lockCoordinator.onApplicationUnlocked = { [weak self] bundleIdentifier in
+      self?.monitor.didUnlockApplication(bundleIdentifier: bundleIdentifier)
+    }
     installSessionObservers()
     DispatchQueue.main.async { [weak self] in
       self?.startProtection()
@@ -83,6 +86,21 @@ final class AppModel: ObservableObject {
         self.alert = AppAlert(
           title: "Could Not Update Login Item", message: error.localizedDescription)
       }
+    }
+  }
+
+  func updateAutomaticRelocking(
+    afterWindowClosesOrLeavesMinutes: Double,
+    activeReauthenticationMinutes: Double
+  ) {
+    authenticateForConfiguration(reason: "Authorize changing automatic re-locking") {
+      [weak self] in
+      guard let self else { return }
+      self.settings.setAutomaticRelocking(
+        afterWindowClosesOrLeavesMinutes: afterWindowClosesOrLeavesMinutes,
+        activeReauthenticationMinutes: activeReauthenticationMinutes
+      )
+      self.monitor.refreshAutomaticRelocking()
     }
   }
 
@@ -304,8 +322,12 @@ final class GuardSettings: ObservableObject {
   @Published private(set) var protectionEnabled: Bool
   @Published private(set) var launchAtLogin: Bool
   @Published private(set) var configurationPasswordIsSet: Bool
+  @Published private(set) var relockAfterWindowClosesOrLeavesMinutes: Double
+  @Published private(set) var activeReauthenticationMinutes: Double
 
   private let protectionKey = "VeilLock.protectionEnabled"
+  private let relockAfterWindowClosesOrLeavesKey = "VeilLock.relockAfterWindowClosesOrLeavesMinutes"
+  private let activeReauthenticationKey = "VeilLock.activeReauthenticationMinutes"
 
   init() {
     if UserDefaults.standard.object(forKey: protectionKey) == nil {
@@ -314,6 +336,10 @@ final class GuardSettings: ObservableObject {
     protectionEnabled = UserDefaults.standard.bool(forKey: protectionKey)
     launchAtLogin = SMAppService.mainApp.status == .enabled
     configurationPasswordIsSet = ConfigurationPasswordStore.isConfigured
+    relockAfterWindowClosesOrLeavesMinutes = Self.normalizedMinutes(
+      UserDefaults.standard.double(forKey: relockAfterWindowClosesOrLeavesKey))
+    activeReauthenticationMinutes = Self.normalizedMinutes(
+      UserDefaults.standard.double(forKey: activeReauthenticationKey))
   }
 
   func setLaunchAtLogin(_ enabled: Bool) throws {
@@ -327,5 +353,21 @@ final class GuardSettings: ObservableObject {
 
   func refreshConfigurationPasswordState() {
     configurationPasswordIsSet = ConfigurationPasswordStore.isConfigured
+  }
+
+  func setAutomaticRelocking(
+    afterWindowClosesOrLeavesMinutes: Double,
+    activeReauthenticationMinutes: Double
+  ) {
+    let relockDelay = Self.normalizedMinutes(afterWindowClosesOrLeavesMinutes)
+    let activeInterval = Self.normalizedMinutes(activeReauthenticationMinutes)
+    UserDefaults.standard.set(relockDelay, forKey: relockAfterWindowClosesOrLeavesKey)
+    UserDefaults.standard.set(activeInterval, forKey: activeReauthenticationKey)
+    relockAfterWindowClosesOrLeavesMinutes = relockDelay
+    self.activeReauthenticationMinutes = activeInterval
+  }
+
+  private static func normalizedMinutes(_ value: Double) -> Double {
+    min(max(value.rounded(), 0), 120)
   }
 }

@@ -13,6 +13,7 @@ final class LockCoordinator: ObservableObject {
   private var lockedRunningApplication: NSRunningApplication?
   private var panels: [LockPanel] = []
   private var authenticator: TouchIDAuthenticator?
+  var onApplicationUnlocked: ((String) -> Void)?
 
   func isUnlocked(_ bundleIdentifier: String) -> Bool {
     unlockedBundleIdentifiers.contains(bundleIdentifier)
@@ -23,7 +24,13 @@ final class LockCoordinator: ObservableObject {
     lockedApplication = application
     lockedRunningApplication = runningApplication
     authenticationStatus = "Touch ID is required to continue."
-    showPanels(for: application, frames: WindowFrameResolver.visibleFrames(for: runningApplication))
+    let windowFrame = WindowFrameResolver.foremostVisibleFrame(for: runningApplication)
+
+    // Hiding the protected app is deliberate: an overlay alone can be exposed
+    // briefly by a Spaces transition. The panel uses the last public window
+    // geometry only; it does not take a screenshot or inspect app content.
+    runningApplication.hide()
+    showPanel(for: application, frame: windowFrame)
 
     DispatchQueue.main.async { [weak self] in
       self?.requestAuthentication()
@@ -33,6 +40,7 @@ final class LockCoordinator: ObservableObject {
   func requestAuthentication() {
     guard let application = lockedApplication, !isAuthenticating else { return }
     isAuthenticating = true
+    updatePanelInteractivity()
     authenticationStatus = "Waiting for Touch ID…"
 
     let authenticator = TouchIDAuthenticator()
@@ -40,6 +48,7 @@ final class LockCoordinator: ObservableObject {
     authenticator.authenticate(reason: "Unlock \(application.displayName)") { [weak self] result in
       guard let self else { return }
       self.isAuthenticating = false
+      self.updatePanelInteractivity()
       switch result {
       case .success:
         self.unlockCurrentApplication()
@@ -53,6 +62,7 @@ final class LockCoordinator: ObservableObject {
     authenticator?.cancel()
     authenticator = nil
     isAuthenticating = false
+    updatePanelInteractivity()
     authenticationStatus = "The app remains protected."
   }
 
@@ -77,17 +87,25 @@ final class LockCoordinator: ObservableObject {
     authenticationStatus = ""
     dismissPanels()
 
+    onApplicationUnlocked?(application.bundleIdentifier)
     runningApplication?.unhide()
     runningApplication?.activate(options: [.activateIgnoringOtherApps])
   }
 
-  private func showPanels(for application: ProtectedApplication, frames: [CGRect]) {
+  private func showPanel(for application: ProtectedApplication, frame: CGRect?) {
     dismissPanels()
-    let panelFrames = frames.isEmpty ? NSScreen.screens.map(\.frame) : frames
-    for frame in panelFrames {
-      let panel = LockPanel(frame: frame, coordinator: self, application: application)
-      panel.orderFrontRegardless()
-      panels.append(panel)
+    let targetFrame = frame ?? NSScreen.main?.frame ?? NSScreen.screens.first?.frame
+    guard let targetFrame else { return }
+
+    let panel = LockPanel(frame: targetFrame, coordinator: self, application: application)
+    panel.setAuthenticationActive(isAuthenticating)
+    panel.orderFrontRegardless()
+    panels.append(panel)
+  }
+
+  private func updatePanelInteractivity() {
+    for panel in panels {
+      panel.setAuthenticationActive(isAuthenticating)
     }
   }
 
@@ -174,17 +192,29 @@ final class LockPanel: NSPanel {
     isOpaque = false
     backgroundColor = .clear
     level = .screenSaver
-    collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+    // Keep the veil in the protected app's current desktop space. It must not
+    // follow the user into a different app's independent full-screen space.
+    collectionBehavior = [.stationary, .ignoresCycle]
     hasShadow = false
     hidesOnDeactivate = false
     isReleasedWhenClosed = false
     animationBehavior = .none
-    contentView = NSHostingView(
+    contentView = LockHostingView(
       rootView: LockScreen(coordinator: coordinator, application: application))
   }
 
-  override var canBecomeKey: Bool { true }
-  override var canBecomeMain: Bool { true }
+  func setAuthenticationActive(_ isActive: Bool) {
+    ignoresMouseEvents = isActive
+  }
+
+  // While LocalAuthentication owns the system prompt, this panel must not take
+  // keyboard focus. Otherwise a click on the veil can deactivate the prompt.
+  override var canBecomeKey: Bool { false }
+  override var canBecomeMain: Bool { false }
+}
+
+final class LockHostingView: NSHostingView<LockScreen> {
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 struct LockScreen: View {
@@ -193,62 +223,78 @@ struct LockScreen: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
   var body: some View {
-    ZStack {
-      if reduceTransparency {
-        Color.black.opacity(0.94)
-      } else {
-        FrostedBackdrop()
-        Color.black.opacity(0.42)
-      }
-
-      VStack(spacing: 18) {
-        Image(systemName: "lock.fill")
-          .font(.system(size: 42, weight: .semibold))
-          .foregroundStyle(.white)
-          .padding(18)
-          .background(.white.opacity(0.12), in: Circle())
-
-        Text("\(application.displayName) is protected")
-          .font(.system(size: 26, weight: .semibold))
-          .foregroundStyle(.white)
-
-        Text(coordinator.authenticationStatus)
-          .font(.callout)
-          .foregroundStyle(.white.opacity(0.72))
-          .multilineTextAlignment(.center)
-          .frame(maxWidth: 360)
-
-        HStack(spacing: 12) {
-          Button("Keep Locked") {
-            coordinator.keepCurrentApplicationLocked()
-          }
-          .buttonStyle(.bordered)
-          .tint(.white.opacity(0.18))
-
-          Button {
-            coordinator.requestAuthentication()
-          } label: {
-            Label("Unlock with Touch ID", systemImage: "touchid")
-          }
-          .buttonStyle(.borderedProminent)
-          .tint(.indigo)
-          .disabled(coordinator.isAuthenticating)
+    GeometryReader { proxy in
+      ZStack {
+        if reduceTransparency {
+          Color.black.opacity(0.94)
+        } else {
+          FrostedBackdrop()
+          Color.black.opacity(0.42)
         }
+
+        lockCard
+          .frame(maxWidth: min(390, max(240, proxy.size.width - 40)))
+          .position(x: proxy.size.width / 2, y: cardCenter(in: proxy.size))
       }
-      .padding(34)
-      .frame(maxWidth: 430)
-      .background(.black.opacity(reduceTransparency ? 0.20 : 0.32))
-      .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-      .overlay {
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .stroke(.white.opacity(0.12))
-      }
-      .shadow(color: .black.opacity(0.32), radius: 28, y: 12)
+      .allowsHitTesting(!coordinator.isAuthenticating)
     }
     .ignoresSafeArea()
     .accessibilityElement(children: .contain)
     .accessibilityLabel(
-      "\(application.displayName) is protected. Touch ID is required to unlock it.")
+      coordinator.isAuthenticating
+        ? "\(application.displayName) is protected. Use the macOS Touch ID prompt above."
+        : "\(application.displayName) is protected. Touch ID is required to unlock it.")
+  }
+
+  @ViewBuilder
+  private var lockCard: some View {
+    VStack(spacing: coordinator.isAuthenticating ? 10 : 16) {
+      Image(systemName: "lock.fill")
+        .font(.system(size: coordinator.isAuthenticating ? 23 : 36, weight: .semibold))
+        .foregroundStyle(.white)
+        .padding(coordinator.isAuthenticating ? 12 : 16)
+        .background(.white.opacity(0.12), in: Circle())
+
+      Text("\(application.displayName) is protected")
+        .font(.system(size: coordinator.isAuthenticating ? 19 : 25, weight: .semibold))
+        .foregroundStyle(.white)
+
+      Text(
+        coordinator.isAuthenticating
+          ? "Use the macOS Touch ID prompt above."
+          : coordinator.authenticationStatus)
+        .font(.callout)
+        .foregroundStyle(.white.opacity(0.72))
+        .multilineTextAlignment(.center)
+
+      if !coordinator.isAuthenticating {
+        Button {
+          coordinator.requestAuthentication()
+        } label: {
+          Label("Try Touch ID Again", systemImage: "touchid")
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.indigo)
+      }
+    }
+    .padding(coordinator.isAuthenticating ? 20 : 30)
+    .background(.black.opacity(reduceTransparency ? 0.20 : 0.32))
+    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 24, style: .continuous)
+        .stroke(.white.opacity(0.12))
+    }
+    .shadow(color: .black.opacity(0.32), radius: 28, y: 12)
+  }
+
+  private func cardCenter(in size: CGSize) -> CGFloat {
+    let cardHeight: CGFloat = coordinator.isAuthenticating ? 150 : 250
+    if coordinator.isAuthenticating {
+      // Keep the compact VeilLock status card below the system-owned Touch ID
+      // prompt, while centering both elements horizontally in the app window.
+      return min(size.height - cardHeight / 2 - 24, max(cardHeight / 2 + 24, size.height * 0.74))
+    }
+    return size.height / 2
   }
 }
 
